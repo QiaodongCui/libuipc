@@ -196,3 +196,27 @@ from an exact mirror along the fibre (mirror and also shorten the fibre axis, so
   rejected inputs, scene table on the `none` and `cuda` backends; the CUDA one needs `-m cuda`, which the repo's
   default `addopts` deselects). The headless suite on this build: 252 passed (the 244 of 0.0.29 plus these 8),
   18.9 s, peak 4.1 GB.
+
+## 11. Step 3 result (2026-11-04): CUDA kernels
+
+- Files: `src/backends/cuda/finite_element/constitutions/anisotropic_fiber_function.h` (the math, host and device)
+  and `anisotropic_fiber.cu` (the extra constitution: at init it collects the tets with a fibre and a non-zero
+  stiffness, their global vertex indices, `Dm^-1` and rest volume from the rest positions; energy and
+  gradient/Hessian kernels; Hessian assembled as half blocks like ARAP). Formatted with clang-format 18.1.8.
+- Build gotcha: the first link failed with `unresolved external symbol __cudaRegisterLinkedBinary_..._anisotropic_fiber_cu`.
+  CMake re-globbed and the project lists the new object for the device link, but MSBuild kept the old
+  `build/cp312/src/backends/cuda/cuda.dir/Release/uipc_backend_cuda.device-link.obj` (Nov 3). Deleting it fixed the
+  link (48 s build).
+- Tests (`python/tests/test_anisotropic_fiber.py`, 13 with `-m "basic or cuda"`): a single tet, three vertices fixed,
+  vertex 1 (1 kg) pulled by "gravity" (10 m/s^2), StableNeoHookean E 100 kPa, nu 0.3, fibre along x at 500 kPa,
+  settled with BDF1 at dt 0.05 s for 200 steps, against a NumPy static solve of the same energies:
+
+  | Case | libuipc displacement (mm) | NumPy (mm) | Relative difference |
+  |---|---|---|---|
+  | SNH only | (4.2545, 0, 0) | (4.2545, 0, 0) | 0 |
+  | Pull along the fibre | (0.9360, 0, 0) | (0.9360, 0, 0) | 1.5e-14 |
+  | Pull across the fibre | (-0.5191, 11.5345, 0) | same | 3.1e-16 |
+  | Pull obliquely (6, 6, -3) | (0.3503, 6.6204, -3.3102) | same | 3.1e-15 |
+
+  A fibre applied with stiffness 0 gives a result bitwise equal to SNH alone.
+- Headless Python suite on this build: 257 passed (244 + 13), 22.6 s, peak 4.2 GB.
