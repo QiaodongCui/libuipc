@@ -175,3 +175,24 @@ The energy jumps at `x = -1`, and a pure mirror along the fibre (`x = -1`) is a 
 with zero fibre energy on one side. This is a property of the S-based invariant, not of the code (Smith et al.'s
 I-invariants share the convention). It matters only for inverted tets: for the deferred inversion test, don't start
 from an exact mirror along the fibre (mirror and also shorten the fibre axis, so it is the smallest stretch).
+
+## 10. Step 2 result (2026-11-04): front end, Python binding, UID
+
+- Files: `include/uipc/constitution/anisotropic_fiber.h`, `src/constitution/anisotropic_fiber.cpp`,
+  `src/pybind/pyuipc/constitution/anisotropic_fiber.{h,cpp}`, one registration line in `module.cpp`. CMake and
+  XMake glob these folders; no build file changed. Formatted with clang-format 18.1.8
+  (`uv run --no-project --with clang-format==18.1.8 clang-format -i FILES`; the pinned copy under `output/` is not
+  installed here, and `scripts/format_changed.py` only sees committed changes).
+- UID `2^32 + 1` (4294967297), registered as `AnisotropicFiber`, type `FiniteElement`, user-defined.
+- `apply_to(sc, stiffness, direction)` writes `fiber_direction` (normalized) and `fiber_stiffness` on every tet and
+  adds the UID to `extra_constitution_uids`; it rejects a negative stiffness and a non-3D mesh. Per-tet edits through
+  `view()` work. In Python, `view()` of the `VectorXu64` meta attribute returns `None`; read it with
+  `meta().to_json()`.
+- Incremental wheel build: 55 s (free RAM stayed above 10.5 GB).
+- **libuipc silently ignores an extra constitution without a backend:** with only the front end, a CUDA world
+  initializes and steps with the fibre UID in its constitution table. So step 3 must show that the fibre changes the
+  result, not just that the scene runs.
+- Tests: `python/tests/test_anisotropic_fiber.py`, 8 tests (UID, attributes, re-apply and zero fibre, per-tet edit,
+  rejected inputs, scene table on the `none` and `cuda` backends; the CUDA one needs `-m cuda`, which the repo's
+  default `addopts` deselects). The headless suite on this build: 252 passed (the 244 of 0.0.29 plus these 8),
+  18.9 s, peak 4.1 GB.
