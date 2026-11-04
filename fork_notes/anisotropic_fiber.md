@@ -220,3 +220,34 @@ from an exact mirror along the fibre (mirror and also shorten the fibre axis, so
 
   A fibre applied with stiffness 0 gives a result bitwise equal to SNH alone.
 - Headless Python suite on this build: 257 passed (244 + 13), 22.6 s, peak 4.2 GB.
+
+## 12. Step 4 result (2026-11-04): the cantilever with fibres
+
+`python/examples/fem_cantilever_anisotropy.py` (now with the fibre runs; output in
+`mmd_tools/projects/aniso_demo/step4/`), 2.5 mm grid, 3 s at 60 Hz, fibre stiffness 9 x E_eff (plate tets without
+fibre). `E_axial` is beam theory's stiffness along the arm (isotropic E_eff plus the fibre where it lies along x).
+
+| Arm | Run | E_axial | Tip sag | Beam theory | libuipc / theory | Newton / step | Wall |
+|---|---|---|---|---|---|---|---|
+| slender | SNH E | 3.11 MPa | 17.846 mm | 19.085 mm | 0.935 | 1.77 | 21.3 s |
+| | SNH 10 E | 31.1 MPa | 1.795 mm | 1.909 mm | 0.941 | 1.09 | 4.6 s |
+| | fibres along | 31.1 MPa | 2.004 mm | 2.071 mm | 0.968 | 1.09 | 5.8 s |
+| | fibres vertical | 3.25 MPa | 17.164 mm | 18.304 mm | 0.938 | 1.82 | 41.3 s |
+| stubby | SNH E | 50 kPa | 2.178 mm | 2.343 mm | 0.930 | 1.11 | 1.7 s |
+| | SNH 10 E | 498 kPa | 0.218 mm | 0.234 mm | 0.930 | 1.02 | 1.0 s |
+| | fibres along | 498 kPa | 0.608 mm | 0.641 mm | 0.947 | 1.04 | 1.2 s |
+| | fibres vertical | 52 kPa | 2.116 mm | 2.265 mm | 0.934 | 1.10 | 2.2 s |
+
+Sag ratios, measured (beam theory):
+
+- slender: fibres along / 10 E 1.12 (1.09); fibres vertical / E 0.96 (0.96)
+- stubby: fibres along / 10 E **2.79** (2.74); fibres vertical / E 0.97 (0.97)
+
+All gates met: the slender arm with fibres along sags about like 10 E (2.00 mm), the stubby one 2.8 x as much as
+10 E (0.61 mm), because the fibres don't resist shear; vertical fibres only stiffen through Poisson coupling, by
+the 3-4 % beam theory predicts. Every arm settles (tip still within 0.1 um over the last 0.5 s). Newton
+iterations per step are unchanged by the fibres.
+
+Observation: the slender arm with vertical fibres took 41 s against 21 s for SNH alone at the same Newton count,
+so its linear solves got slower: stiff fibres across the bending direction worsen the conditioning (the paper also
+saw more PCG iterations with stiffer fibres). Worth measuring PCG iterations when fibres go into the flesh.
