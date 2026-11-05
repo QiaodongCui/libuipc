@@ -251,3 +251,21 @@ iterations per step are unchanged by the fibres.
 Observation: the slender arm with vertical fibres took 41 s against 21 s for SNH alone at the same Newton count,
 so its linear solves got slower: stiff fibres across the bending direction worsen the conditioning (the paper also
 saw more PCG iterations with stiffer fibres). Worth measuring PCG iterations when fibres go into the flesh.
+
+## 13. Step 5 result (2026-11-04): the flesh without fibres is unchanged
+
+Ronova's spin flesh (`sim/ronova_flesh_spin.json` settings, 142 frames, 480 Hz), no fibres, on the wheel built from
+`fd97a5dd`, against the runs of 2026-11-04 morning (fork build of v0.0.29 `ac89e10`, PyPI wheel), the 2026-11-03
+PyPI run, and two repeats in the evening (one per build). Free vertices, all frames:
+
+| Pair | Worst difference | Where | 99.9th percentile |
+|---|---|---|---|
+| fibre build, run 1 vs the four plain runs | 0.34-0.48 mm | frame 18, right hip | 0.010-0.012 mm |
+| fibre build, run 1 vs run 2 (same build) | 0.44 mm | frame 18, right hip | 0.016 mm |
+| fibre build, run 2 vs the four plain runs | 0.07-0.11 mm | frame 18, right hip | 0.007-0.013 mm |
+| plain builds among themselves | 0.04-0.19 mm | frame 18 (and 34, 81) | 0.007-0.013 mm |
+
+Newton iterations, total: 5,487-5,496 for all six runs; 0 inverted tets; the same worst tet. So the fibre build
+does not change the flesh: the one place where runs differ by tenths of a millimetre (a point near the right hip at
+frame 18, rest position (-0.055, -0.042, 0.932)) varies as much between two runs of the same build. Run times in the
+evening (3.9-4.1 min against 2.75) came from a game sharing the GPU, not from the build.
