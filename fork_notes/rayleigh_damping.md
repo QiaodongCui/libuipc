@@ -350,3 +350,37 @@ Next: step 5 (Ronova's spin flesh without damping unchanged, against more than o
   total (the others 5,487-5,496); 0 inverted tets, min volume ratio 0.076; 2.8 min of simulation (the earlier runs
   2.75-4.1 min, the slower ones with a game on the GPU). Peak memory 6.6 GB.
 - So registering the constitution changes nothing when it is not applied. Next: step 6 (section 5), in mmd_tools.
+
+## 15. Step 6 (2026-11-05): in mmd_tools, first runs
+
+- **Code** (mmd_tools): `damping_beta` (s) in a flesh config, everywhere and/or per region (`sim/flesh_regions.py`:
+  shared region masks, `youngs_kPa` and `damping_beta` both optional per region, later regions override);
+  `sim/flesh_walk.py` applies RayleighDamping after the regional stiffness (so C is each tet's own) only where beta > 0,
+  so a run without it is unchanged; the per-tet beta is saved in the flesh npz. The flesh geometry has no separate
+  rest geometry, so the rest-geometry crash of section 11 does not apply.
+- **Metric** (`sim/vis_flesh.py`): per frame, the breast vertex farthest from its plainly skinned position; worst
+  value, rebounds (peaks above 10 mm with at least 10 mm prominence: the farthest vertex switches between points, so
+  plain local maxima count wiggles), mean, mean after 0.5 s. It reproduces the hand-measured worst values (62 mm at
+  5 kPa, 129 mm at 2 kPa); the hand counts of rebounds (7, 15) were a looser count: this one gives 8 and 18.
+- **Beta:** the breast swing in the spin is at 6.4-6.8 Hz (FFT of single breast vertices' offset from the skinned
+  body; the 0.45 Hz power is the spin itself). `beta = 2 * 0.25 / (2 pi 6.5)` = 0.012 s, zeta 0.25 there (BDF1 adds
+  0.04 at 480 Hz).
+- **Runs** (beta 0.012 on the `breasts` region, 10,169 tets; variant configs in `projects/damping_flesh/`):
+
+  | | Spin (5 kPa, 480 Hz), none | Spin, beta 0.012 | Walk (2 kPa, 240 Hz), none | Walk, beta 0.012 |
+  |---|---|---|---|---|
+  | Breast swing, worst | 62.4 mm | 31.3 mm | 33.9 mm | 13.1 mm |
+  | Rebounds | 8 | 1 | 24 | 0 |
+  | Mean / after 0.5 s | 19.5 / 14.2 mm | 13.2 / 11.7 mm | 14.2 / 14.3 mm | 7.9 / 8.0 mm |
+  | Chest jiggle, last cycle, p95 / max | 1.9 / 4.8 mm | 1.3 / 2.3 mm | 9.1 / 22.7 mm | 4.8 / 12.9 mm |
+  | Newton iterations | 5,487 | 5,328 | 4,631 | 4,532 |
+  | Simulation time | 2.8 min | 2.7 min | 2.9 min | 2.7 min |
+
+  0 inverted tets and the same pin error in all four. About 11 mm of the spin's late swing is the breasts' steady
+  offset from the skinned body, not swing. The damped spin breasts still follow the burst (31 mm, then a slow 22 mm
+  at 0.45 s) without ringing. (vis_flesh's jiggle filter assumes 30 fps: for the 60 fps spin it keeps motion above
+  about 8 Hz, not 4 Hz; the same for both runs.) No solver cost: damping only on the breasts, fewer Newton
+  iterations.
+- **Open:** whether the walk looks sluggish at beta 0.012 (the bounce is cut to about 40 %): a look, then maybe a
+  lighter beta for the walk; adopting beta in `sim/ronova_flesh_spin.json`; the downstream reruns (cloth, hair,
+  wrap) on a damped flesh.
