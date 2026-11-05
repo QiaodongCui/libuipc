@@ -332,3 +332,21 @@ the CUDA tests (`-m "not example"`): 271 passed.
 - Wall (GPU shared with a game): pluck 39 s at beta 0, 99-136 s with damping; Newton per step 3.2-3.4.
 
 Next: step 5 (Ronova's spin flesh without damping unchanged, against more than one baseline run), then step 6.
+
+## 14. Step 5 result (2026-11-05): the flesh without damping is unchanged
+
+- Python suite with the CUDA tests on the green build: 271 passed (section 13).
+- Ronova's spin flesh (`sim/ronova_flesh_spin.json`, 142 frames at 480 Hz, no RayleighDamping applied) on the green
+  build (the wheel `0.0.29+mmd.66216937.dirty`, the kernel of `12f3b43f`), against six earlier runs: fork and fork2
+  (v0.0.29 fork build), pypi and nov3 (the PyPI wheel), aniso and aniso2 (the fibre build). Free vertices, worst
+  |difference| over all frames / 99.9th percentile:
+
+  | | Worst | 99.9th percentile |
+  |---|---|---|
+  | Green build against each earlier run | 0.05-0.29 mm | 0.007-0.011 mm |
+  | The earlier runs among themselves | 0.04-0.48 mm | 0.007-0.016 mm |
+
+  The worst point is the right-hip point at frame 18 in nearly every pair, as before. Newton iterations 5,487 in
+  total (the others 5,487-5,496); 0 inverted tets, min volume ratio 0.076; 2.8 min of simulation (the earlier runs
+  2.75-4.1 min, the slower ones with a game on the GPU). Peak memory 6.6 GB.
+- So registering the constitution changes nothing when it is not applied. Next: step 6 (section 5), in mmd_tools.
