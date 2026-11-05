@@ -178,3 +178,28 @@ compressed, inverted) and 600 random tets. Every check passes:
 - Tests: `python/tests/test_rayleigh_damping.py`, 9 front-end tests (the CUDA one needs `-m cuda`). Headless Python
   suite: 266 passed (257 + 9), 20.6 s, peak 4.2 GB. As with the fibre, no backend yet: a CUDA scene with the UID
   runs and ignores it.
+
+## 11. Step 3 result (2026-11-04): CUDA kernels
+
+- File: `src/backends/cuda/finite_element/constitutions/rayleigh_damping.cu`. It reuses `snk1::ddEddF_spd` at the
+  step-start `F_n` (from `FiniteElementMethod::x_prevs()`, through `require<FiniteElementMethod>()` in
+  `do_build`), and `fem::tetrahedron_shape_gradients` / `project_F_gradient` / `project_F_hessian_block` as the SNH
+  kernel does. The stale device-link object was deleted before the build (CLAUDE.md, fork build), so it linked the
+  first time (42 s).
+- Tests (`python/tests/test_rayleigh_damping.py`, 13 with `-m "basic or cuda"`): one tet, vertices 0, 2, 3 fixed,
+  vertex 1 (50 g) released from a displaced pose, no gravity, 480 Hz, 100 steps, against the NumPy implicit-Euler
+  oracle (`rayleigh_damping_reference.py`):
+
+  | Case | Max difference / amplitude | Amplitude | Last 20 steps | Steps with the clamp active |
+  |---|---|---|---|---|
+  | small, beta 0.01 | 7.6e-9 | 0.1 mm | 0.0003 mm | 86 |
+  | large, beta 0.01 | 8.5e-10 | 40 mm | 0.17 mm | 95 |
+  | large, beta 0 | 2.1e-9 | 40 mm | 11.8 mm | 77 |
+
+  `beta = 0` is bitwise equal to no RayleighDamping at all. The clamp is active even in the small case: at rest the
+  SNK1 twist eigenvalues `mu + sigma (lambda (J - 1) - mu)` are 0 (rotations cost nothing), and tiny perturbations
+  make them slightly negative.
+- Headless Python suite on this build: 270 passed (266 + 4), 30 s, peak 4.2 GB.
+- **libuipc quirk found:** a geometry created with an explicit rest geometry (`geometries().create(mesh, rest)`)
+  whose rest mesh lacks the material (a bare `tetmesh`) crashes libuipc natively at `world.init`, without an error
+  message. Giving the rest mesh the same constitutions fixes it. Candidate for an upstream issue (a clear error).

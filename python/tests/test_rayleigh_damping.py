@@ -117,3 +117,103 @@ def test_scene_lists_uid_none_backend(tmp_path):
 @pytest.mark.skipif(skip_cuda_on_macos, reason=skip_cuda_on_macos_reason)
 def test_scene_lists_uid_cuda_backend(tmp_path):
     run_one_step("cuda", str(tmp_path / "cuda"))
+
+
+# ---------------------------------------------------------------- physics: one tet against the NumPy oracle
+# Rest tet (0, e_x, e_y, e_z) * 0.1 m, vertices 0, 2, 3 fixed, vertex 1 (50 g) released from a displaced pose, no
+# gravity, BDF1 at 480 Hz. The oracle (fork_notes/rayleigh_damping_reference.py) integrates the same incremental
+# potential: SNK1 with libuipc's stored mu and lambda plus the damping term with the SNK1 projection at F_n.
+sys_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "fork_notes")
+TET_REST = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]) * 0.1
+MASS = np.array([1.0, 0.05, 1.0, 1.0])
+FIXED = np.array([True, False, True, True])
+DT, STEPS = 1 / 480, 100
+
+
+def oracle():
+    import sys
+
+    if sys_path not in sys.path:
+        sys.path.insert(0, sys_path)
+    import rayleigh_damping_reference as ref
+
+    return ref
+
+
+def tet_trajectory(workspace, X0, beta):
+    """libuipc: vertex 1's position at each step (STEPS + 1, 3); beta None = no RayleighDamping at all."""
+    T = np.array([[0, 1, 2, 3]])
+    mesh, rest = tetmesh(X0, T), tetmesh(TET_REST, T)
+    for m in (mesh, rest):
+        label_surface(m)
+        label_triangle_orient(m)
+    # the rest geometry needs the same material: a bare one crashes libuipc at init without a message
+    for m in (mesh, rest):
+        StableNeoHookean().apply_to(m, ElasticModuli.youngs_poisson(3e4, 0.3), mass_density=1000.0)
+        if beta is not None:
+            RayleighDamping().apply_to(m, beta)
+    mass = view(mesh.vertices().find("mass") or mesh.vertices().create("mass", 0.0))
+    mass[:] = MASS.reshape(mass.shape)
+    is_fixed = view(mesh.vertices().find(builtin.is_fixed))
+    is_fixed[:] = FIXED.astype(int).reshape(is_fixed.shape)
+    mu = float(view(mesh.tetrahedra().find("mu"))[0])
+    lam = float(view(mesh.tetrahedra().find("lambda"))[0])
+
+    cfg = Scene.default_config()
+    cfg["dt"] = DT
+    cfg["gravity"] = [[0.0], [0.0], [0.0]]
+    cfg["contact"]["enable"] = 0
+    cfg["newton"]["velocity_tol"] = 1e-9
+    cfg["newton"]["semi_implicit"]["enable"] = 0
+    cfg["linear_system"]["tol_rate"] = 1e-10
+    scene = Scene(cfg)
+    slot, _ = scene.objects().create("tet").geometries().create(mesh, rest)
+    os.makedirs(workspace, exist_ok=True)
+    engine = Engine("cuda", workspace)
+    world = World(engine)
+    world.init(scene)
+    assert world.is_valid()
+    out = [X0[1].copy()]
+    for _ in range(STEPS):
+        world.advance()
+        world.retrieve()
+        out.append(slot.geometry().positions().view().reshape(-1, 3)[1].copy())
+    return np.array(out), mu, lam
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(skip_cuda_on_macos, reason=skip_cuda_on_macos_reason)
+@pytest.mark.parametrize(
+    "case, offset, beta",
+    [
+        ("small, linear", [1e-4, -5e-5, 3e-5], 0.01),
+        ("large, projection active", [-0.04, 0.03, 0.025], 0.01),
+        ("large, no damping", [-0.04, 0.03, 0.025], 0.0),
+    ],
+)
+def test_single_tet_trajectory_matches_oracle(tmp_path, case, offset, beta):
+    ref = oracle()
+    X0 = TET_REST.copy()
+    X0[1] += offset
+    traj, mu, lam = tet_trajectory(str(tmp_path / "ws"), X0, beta)
+    tet = ref.Tet(TET_REST, mu, lam, beta)
+    expect = ref.implicit_euler(tet, TET_REST, X0, np.zeros((4, 3)), MASS, FIXED, DT, STEPS)[:, 1]
+    scale = np.abs(expect - TET_REST[1]).max()
+    assert np.abs(traj - expect).max() < 1e-7 * scale, (case, np.abs(traj - expect).max() / scale)
+    if "projection" in case:  # the damping energy uses the clamped Hessian at some steps
+        clamped = sum((ref.snk1_eigensystem(mu, lam, tet.F(np.vstack([TET_REST[0], x, TET_REST[2:]])))[0] < 0).any()
+                      for x in expect[:-1])
+        assert clamped > 0
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(skip_cuda_on_macos, reason=skip_cuda_on_macos_reason)
+def test_single_tet_damping_works_and_zero_beta_is_a_no_op(tmp_path):
+    X0 = TET_REST.copy()
+    X0[1] += [-0.02, 0.015, 0.01]
+    none, _, _ = tet_trajectory(str(tmp_path / "none"), X0, None)
+    zero, _, _ = tet_trajectory(str(tmp_path / "zero"), X0, 0.0)
+    damped, _, _ = tet_trajectory(str(tmp_path / "damped"), X0, 0.01)
+    np.testing.assert_array_equal(zero, none)  # no damped tet: the extra constitution adds nothing
+    amp = lambda t: np.abs(t[-20:] - TET_REST[1]).max()  # noqa: E731
+    assert amp(damped) < 0.5 * amp(none)  # damping removes most of the ringing by the last steps
