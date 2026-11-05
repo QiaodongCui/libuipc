@@ -50,8 +50,9 @@ step-start deformation gradient `F_n` (libuipc's `snk1::ddEddF_spd`, the same pr
 null space holds the rest pose's rigid motions, not the rotated pose's), which matters in a spin. `K(x_n)` follows
 the body. It is still not exactly rotation-free when the element is stressed: for a rotation `W` of a stressed
 element, `(W F)^T H (W F) = -P : W^2 F`, not 0, so a spinning, stretched body loses a little angular velocity. The
-gates below measure it; if it matters, use the co-rotated rest stiffness `R K(x_bar) R^T` instead (Mueller-style),
-which is exactly rotation-free.
+gates below measure it; if it matters, use the co-rotated rest stiffness `R K(x_bar) R^T` instead (Mueller-style).
+(Correction after step 4: the co-rotated form is rotation-free only for undeformed elements; a damping of the Green
+strain rate is exactly rotation-free. Section 12.)
 
 ## 3. Design in libuipc
 
@@ -203,3 +204,75 @@ compressed, inverted) and 600 random tets. Every check passes:
 - **libuipc quirk found:** a geometry created with an explicit rest geometry (`geometries().create(mesh, rest)`)
   whose rest mesh lacks the material (a bare `tetmesh`) crashes libuipc natively at `world.init`, without an error
   message. Giving the rest mesh the same constitutions fixes it. Candidate for an upstream issue (a clear error).
+
+## 12. Step 4 result (2026-11-05): test scenes; the spin gate fails
+
+Scenes: `python/examples/fem_damping_demos.py` (headless: `pluck`, `spin`, `show`) and
+`fem_damping_demos_render.py` (Blender: stills, MP4 videos, .blend files). The outputs stay out of the repository.
+
+**Pluck (passes).** The slender arm of `fem_cantilever_anisotropy.py` (20 x 2 x 2 cm, E 2.5 MPa, 33,792 tets), no
+gravity, dt 1/1920. Its modes come from libuipc's own linearization, rebuilt in NumPy: the SNK1 stiffness at rest
+(linear elasticity with Lame `(mu, lambda - mu)`; it matches the reference's exact Hessian at rest to 2e-16 per tet)
+and the lumped vertex masses (density x the rest mesh's vertex `volume`). The Kuhn tets make the arm 1.7 % stiffer
+along one diagonal of its cross-section, so it bends along the diagonals: the gate plucks the first two modes of one
+diagonal (4.573 and 27.465 Hz, ratio 6.006; Euler-Bernoulli's 6.267 less shear), tip 1 mm + 0.3 mm. Each mode's
+coordinate `u_k^T M (x - X)` is fitted by the exact BDF1 two-step recurrence and compared with the BDF1 prediction
+for that mode (`(q+ - 2q + q-)/dt^2 = -w^2 q+ - beta w^2 (q+ - q)/dt`):
+
+| beta (s) | Mode | zeta measured | BDF1 prediction | Error | Added zeta | beta w / 2 |
+|---|---|---|---|---|---|---|
+| 0 | 1 | 0.00748 | 0.00748 | 1.8e-4 | | |
+| 0 | 2 | 0.04490 | 0.04483 | 1.6e-3 | | |
+| 0.002 | 1 | 0.03653 | 0.03621 | 0.9 % | 0.0290 | 0.0287 |
+| 0.002 | 2 | 0.21654 | 0.21535 | 0.55 % | 0.1716 | 0.1726 |
+| 0.005 | 1 | 0.07995 | 0.07927 | 0.86 % | 0.0725 | 0.0718 |
+| 0.005 | 2 | 0.47144 | 0.46645 | 1.1 % | 0.4265 | 0.4314 |
+
+- Without damping, libuipc's per-mode decay is BDF1's own to 2e-4 and 1.6e-3. With damping, the added damping
+  ratio grows with frequency as designed: mode 2 / mode 1 = 5.91 and 5.89, against `w2 / w1` = 6.01 (BDF1's
+  discretization of the damping term predicts 5.94).
+- **The ~1 % excess grows with amplitude** (beta 0.005, error against the linear prediction, modes 1 / 2):
+  1/4 x the amplitude 0.20 % / 0.17 %, 1 x 0.86 % / 1.1 %, 4 x 3.7 % / 10 % (at 4 x, beta 0 itself is off by
+  0.4 % / 2.6 %: geometric nonlinearity). So it is not an implementation error but the damping metric's dependence
+  on the state: bending rotates stressed elements, `-P : W^2 F` is positive in tension and negative in compression,
+  and the PSD projection keeps only the positive part, so the damping metric exceeds `K(rest)` by O(strain).
+- Newton per step 3.2 (beta 0) to 3.8; wall 40 s for beta 0 and 120-136 s with damping (GPU shared with a game:
+  only roughly comparable). `newton/velocity_tol` 1e-8 m/s is at round-off here: 292 harmless "Line Search Exits
+  with Max Iteration" warnings with `rel_E_increase` about 1e-16.
+
+**Spin (fails).** A free 10 cm cube (3,072 tets, E 10 kPa, nu 0.4), no gravity, 1.5 turns/s about z, released
+stretched 1.1 x along x, dt 1/480, 2 s:
+
+| beta (s) | L / L0 after 2 s | vs beta 0 | Turns | Spin at the end | Wobble, first 0.2 s / last 0.25 s (peak to peak) |
+|---|---|---|---|---|---|
+| 0 | 0.742 | | 2.69 | 1.22 turns/s | 3.2 mm / 0.01 mm |
+| 0.02 | 0.238 | -68 % | 1.20 | 0.41 turns/s | 3.4 mm / 0.00 mm |
+| 0.05 | 0.115 | -84 % | 0.59 | 0.20 turns/s | 3.4 mm / 0.00 mm |
+
+- BDF1 alone loses angular momentum at `(W dt)^2` per step (for a particle on a circle, `L+ = L + dt m v+ x v`):
+  0.69 predicted at a constant spin, 0.74 measured as the spin slows. Ronova's spin is driven by the bones, so this
+  is a lag of free flesh, already in today's results.
+- **The damping drags on the rotation**: the gate wanted the loss within about 1 % of beta 0; it is 68 % at the flesh's
+  beta. This is the rotation leak of section 2, at full size: centrifugal tension makes `-P : W^2 F > 0`, and the
+  projection adds the compressed elements' part. The wobble dies within 0.2 s as intended. In the flesh the same leak
+  would resist every rigid rotation of stressed flesh (sagging breasts turning with the body, thighs swinging), so
+  it would add lag behind the bones instead of only calming the swing. Not usable as is.
+
+**Show.** Three arms under gravity at 480 Hz, tip lifted 40 mm and released (`show.mp4`). Tip swing peak to peak
+over 0-0.5 s, 1-1.5 s and 2-2.5 s: beta 0: 106, 39, 15 mm (BDF1's own damping); beta 0.005: 90, 2, 0 mm;
+beta 0.02: 64, 0, 0 mm. The damped arms settle at a sag of 17.8 mm.
+
+**Decision needed: an objective damping metric.** The co-rotated rest stiffness (section 2's fallback) is
+rotation-free only for undeformed elements: a rotation `W` of `F_n = R S` gives `sym(R^T W R S) = [W', S] / 2`,
+which is O(stretch) per unit rotation, so its leak is O(stretch^2) instead of O(stress). Exactly rotation-free at any
+deformation is a damping of the Green strain rate (Kelvin-Voigt in the material frame):
+
+  `E_d = beta dt V / 2 * dE : C : dE`, with `dE = E(F) - E(F_n)`, `E(F) = (F^T F - I) / 2`
+
+and `C` the small-strain elasticity tensor of the tet's SNK1 (Lame `mu`, `lambda - mu`). A rotation within the step
+leaves `F^T F` and so `dE` unchanged: no damping, at any rotation and any stress. At rest it equals `beta K(rest)`, so
+`zeta = beta w / 2` stays. Gradient `beta dt V * F (C : dE)` (as PK1 = F S); Hessian `beta dt V (J^T C J + I (x) S_d)`
+with `J = d dE / dF`; the second term is O(dE), small within a step, and is dropped (Gauss-Newton), so the Hessian is
+PSD without an eigen-decomposition (cheaper than the current `ddEddF_spd`). Steps to switch: NumPy reference and
+oracle, the kernel's energy / gradient / Hessian, the tests, then the pluck (the excess should drop to O(strain^2))
+and the spin gates again.
