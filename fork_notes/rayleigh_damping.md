@@ -135,3 +135,34 @@ so `beta / dt = 13` at 480 Hz. Faster ripples are then strongly damped (at 30 Hz
 - **Overdamping** makes flesh look sluggish: check the walk, not just the spin.
 - **dt dependence:** `beta` is physical (seconds), so results should not depend on dt beyond BDF1's own damping;
   check by running the spin at 480 and 960 Hz once.
+
+## 9. Step 1 result (2026-11-04): the math checks out
+
+`fork_notes/rayleigh_damping_reference.py` (NumPy, about 5 s): 600 random deformation gradients (stretched,
+compressed, inverted) and 600 random tets. Every check passes:
+
+| Check | Worst error |
+|---|---|
+| SNK1 exact Hessian vs finite differences of libuipc's PK1 (`snk1::dEdF`) | 2.0e-10 |
+| Port of libuipc's analytic eigensystem (`snk1::ddEddF_spd`): `Q^T Q = I` | 2.7e-15 |
+| Port: `Q diag(ev) Q^T` vs the exact Hessian | 9.9e-15 |
+| Port, clamped, vs a 9x9 eigen-clamp of the exact Hessian | 9.8e-15 |
+| Damping gradient / Hessian vs finite differences | 3.7e-10 / 3.6e-10 |
+| Damping Hessian PSD | 1.3e-15 |
+| Rigid translation in the step | 9e-27 (zero) |
+| Unstressed tet rotated by theta in the step: `E_d / theta^4` constant | 1.3e-7 |
+| `(W F)^T H (W F) = -P : W^2 F` | 0 |
+| Stressed tet rotated: `E_d / theta^2` matches `(beta dt V / 2)(W F)^T H_spd (W F)` | 4.4e-8 |
+| One-tet implicit-Euler oracle: decay per step vs the discrete BDF1 recurrence (beta 0 / 0.004) | 2e-4 / 6e-4 |
+| Added damping ratio vs `beta w / 2` | 2.8 % |
+
+- libuipc's closed-form SNK1 projection is exact: it equals the 9x9 eigen-clamp of the exact Hessian to round-off.
+  579 of the 600 random F had a negative eigenvalue, so the clamp is active almost everywhere off the rest state.
+- Rotation in the step: an unstressed tet costs `O(theta^4)` (here `3.5e-8 theta^4`), a stressed one leaks at
+  `O(theta^2)` (`9.5e-9 theta^2` for `F = diag(1.3, 0.95, 0.9)`), exactly as section 2 predicts; whether that is
+  small enough is the spinning-cube gate.
+- **BDF1's own damping is a stiffness-proportional damping with beta = dt**: the oracle's mode (9.2 Hz at
+  dt = 1/480) shows `zeta = 0.060 = w dt / 2`. So at 480 Hz the flesh already has the equivalent of
+  `beta = 0.002 s`; the target `beta` of about 0.02-0.03 s (section 6) is about 10x that, independent of dt. With
+  `beta = 0.004`, the added `zeta` (0.112) is within 3 % of `beta w / 2` (0.116); the rest is BDF1's
+  discretization of the damping term, which the discrete recurrence matches to 6e-4.
