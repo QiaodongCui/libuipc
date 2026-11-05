@@ -166,3 +166,15 @@ compressed, inverted) and 600 random tets. Every check passes:
   `beta = 0.002 s`; the target `beta` of about 0.02-0.03 s (section 6) is about 10x that, independent of dt. With
   `beta = 0.004`, the added `zeta` (0.112) is within 3 % of `beta w / 2` (0.116); the rest is BDF1's
   discretization of the damping term, which the discrete recurrence matches to 6e-4.
+
+## 10. Step 2 result (2026-11-04): front end, Python binding, UID
+
+- Files: `include/uipc/constitution/rayleigh_damping.h`, `src/constitution/rayleigh_damping.cpp`,
+  `src/pybind/pyuipc/constitution/rayleigh_damping.{h,cpp}`, one registration line in `module.cpp`. Formatted with
+  clang-format 18.1.8. Incremental wheel build: 47 s.
+- UID `2^32 + 2` (4294967298), registered as `RayleighDamping`, type `FiniteElement`, user-defined.
+- `apply_to(sc, beta)` writes `damping_beta` on every tet and adds the UID to `extra_constitution_uids`. It rejects
+  a negative beta, a non-3D mesh, and a mesh whose primary material is not StableNeoHookean (UID 10: none, or ARAP).
+- Tests: `python/tests/test_rayleigh_damping.py`, 9 front-end tests (the CUDA one needs `-m cuda`). Headless Python
+  suite: 266 passed (257 + 9), 20.6 s, peak 4.2 GB. As with the fibre, no backend yet: a CUDA scene with the UID
+  runs and ignores it.

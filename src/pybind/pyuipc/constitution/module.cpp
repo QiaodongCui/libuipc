@@ -17,6 +17,7 @@
 #include <pyuipc/constitution/inter_affine_body_extra_constitution.h>
 #include <pyuipc/constitution/kirchhoff_rod_bending.h>
 #include <pyuipc/constitution/anisotropic_fiber.h>
+#include <pyuipc/constitution/rayleigh_damping.h>
 #include <pyuipc/constitution/soft_transform_constraint.h>
 #include <pyuipc/constitution/discrete_shell_bending.h>
 #include <pyuipc/constitution/strain_plastic_discrete_shell_bending.h>
@@ -84,6 +85,7 @@ PyModule::PyModule(py::module& m)
     PyStrainPlasticDiscreteShellBending{m};
     PyStressPlasticDiscreteShellBending{m};
     PyAnisotropicFiber{m};
+    PyRayleighDamping{m};
 
     // Inter Primitive Constitutions
     PyInterPrimitiveConstitution{m};
