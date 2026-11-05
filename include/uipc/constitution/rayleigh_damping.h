@@ -5,13 +5,14 @@
 namespace uipc::constitution
 {
 /**
- * @brief Stiffness-proportional (Rayleigh beta) damping for StableNeoHookean tetrahedra.
+ * @brief Stiffness-proportional (Rayleigh beta) damping for StableNeoHookean tetrahedra, objective form.
  *
- * Adds the damping force -beta K v, K the PSD-projected StableNeoHookean stiffness at the start of
- * the step. In BDF1 incremental-potential form, per tetrahedron:
- *   E_d = beta dt V / 2 * dF^T H(F_n) dF,  dF = vec(F - F_n)
- * A vibration mode of angular frequency w gets the damping ratio beta w / 2; rigid motion is not
- * damped (up to a small leak for stressed elements).
+ * Damps the rate of the Green strain E = (F^T F - I) / 2 with the tetrahedron's small-strain
+ * elasticity C (StableNeoHookean's Lame parameters at rest). In BDF1 incremental-potential form,
+ * per tetrahedron, with F_n the deformation gradient at the start of the step:
+ *   E_d = beta dt V / 2 * dE : C : dE,  dE = (F^T F - F_n^T F_n) / 2
+ * Near rest this is the damping force -beta K v: a vibration mode of angular frequency w gets the
+ * damping ratio beta w / 2. Rigid motion is never damped, at any stress.
  *
  * Apply it after StableNeoHookean. Per-tetrahedron attribute:
  *   damping_beta (Float, seconds; >= 0; zero = no damping)

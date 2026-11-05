@@ -121,7 +121,8 @@ so `beta / dt = 13` at 480 Hz. Faster ripples are then strongly damped (at 30 Hz
 
 - **Damp the fibre stiffness too?** `K` here is SNH only. With AnisotropicFiber on the same tets, true
   stiffness-proportional damping would add the fibre Hessian. Not needed for the breasts.
-- **`K(x_n)` or co-rotated rest stiffness:** decide after the spinning-cube gate.
+- **`K(x_n)` or co-rotated rest stiffness:** decided after the spinning-cube gate (section 12): neither; the Green
+  strain rate (section 13).
 - **Per-tet or per-vertex `beta`:** per tet first (regions are per tet in `flesh_regions.py`).
 - **Mass-proportional damping relative to the skeleton** (`TODO.md` step 1): only if the slow swing is still too
   large.
@@ -276,3 +277,58 @@ with `J = d dE / dF`; the second term is O(dE), small within a step, and is drop
 PSD without an eigen-decomposition (cheaper than the current `ddEddF_spd`). Steps to switch: NumPy reference and
 oracle, the kernel's energy / gradient / Hessian, the tests, then the pluck (the excess should drop to O(strain^2))
 and the spin gates again.
+
+## 13. The switch to the Green strain rate (2026-11-05): every gate passes
+
+**Kernel** (`rayleigh_damping.cu`): `E_d = beta dt V / 2 * dE : C : dE`, `dE = (F^T F - F_n^T F_n) / 2`; gradient
+`beta dt V * F (C : dE)`; Hessian `beta dt V * M`, `M(3b + i, 3d + k) = mu_L ((F F^T)_ik delta_bd + F_id F_kb) +
+lam_L F_ib F_kd` (closed form, no eigen-decomposition; the geometric term `I (x) (C : dE)` is left out, Gauss-Newton).
+Per tet the small-strain Lame parameters of SNK1: `mu_L = mu`, `lam_L = max(lambda - mu, -2/3 mu)` (so C is PSD).
+The front end, UID, attribute and Python API are unchanged; only their descriptions changed. Editing the `.cu` hit
+the device-link error too: delete the device-link object after any `.cu` change (CLAUDE.md updated).
+
+**NumPy reference** (`rayleigh_damping_reference.py`): both forms, `Tet(..., form="green" | "stiffness")`, the
+stiffness form kept as the record of steps 1-4. All checks pass; the new ones:
+
+| Check (green) | Worst |
+|---|---|
+| Gradient / exact Hessian vs finite differences | 4.6e-10 / 4.3e-10 |
+| The kernel's closed-form M vs `J^T C J` | 2.8e-16 |
+| M PSD | 1.1e-15 |
+| Finite rotation (0.2-1 rad) in the step of a stressed tet: `E_d / (beta dt V mu F^4)` | 7e-30 (zero) |
+| Net torque of the damping force | 1.2e-16 |
+| Hessian at rest vs the stiffness form's (`beta K(rest)`) | 1.8e-15 |
+| Oracle: decay per step vs discrete BDF1 (beta 0 / 0.004), added zeta vs `beta w / 2` | 2e-4 / 6e-4, 2.8 % (as the stiffness form) |
+
+**Oracle fix.** Its Armijo line search compared total energies, about 3e-6 J here (mostly SNK1's rest energy
+`mu^2 / (2 lambda)`), with round-off about 3e-22 J. The green energy is quartic in x, so after the first Newton step
+about 2e-11 m remain, worth a decrease of about 1e-23 J: below round-off, so the oracle stalled there (its gradient
+1.3e-12 against 1e-20 at libuipc's point). Below round-off it now accepts a step that lowers the gradient norm. The
+stiffness form is quadratic in x, so its first Newton step was exact and the stall never showed.
+
+**Tests** (`test_rayleigh_damping.py`, 15 with `-m "basic or cuda"`): one tet against the oracle, max error /
+amplitude: small 7.6e-10, large 1.5e-12, large without damping 2.3e-12, a free tet stretched 1.1 x and spinning at
+2 turns/s 4.9e-12. The spinning tet keeps its angular momentum: beta 0.01 vs none +8.0e-4 at the end (the oracle
+says +8.04e-4; the stiffness form lost 25 % there), while its ringing drops from 0.192 to 0.120 mm. Python suite with
+the CUDA tests (`-m "not example"`): 271 passed.
+
+**Gates** (the scenes of section 12, same settings):
+
+| Pluck, zeta vs BDF1 prediction | Stiffness form | Green |
+|---|---|---|
+| beta 0.002, mode 1 / 2 | 0.9 % / 0.55 % | 5.6e-5 / 4.7e-4 |
+| beta 0.005, mode 1 / 2 | 0.86 % / 1.1 % | 2.3e-5 / 2.0e-4 |
+| beta 0.005 at 4 x the amplitude, mode 1 / 2 (beta 0 alone: 3.8e-3 / 2.6e-2) | 3.7 % / 10 % | 3.9e-4 / 3.2e-3 |
+
+- Added zeta, mode 2 / mode 1: 5.94 (beta 0.002) and 5.87 (0.005), exactly BDF1's prediction (5.94, 5.87); `w2 / w1`
+  is 6.01. Added zeta vs `beta w / 2`: mode 1 within 0.1 %, mode 2 2.3 % below (BDF1's discretization of the term).
+- **Spin:** L / L0 after 2 s 0.7416 (beta 0), 0.7416 (0.02), 0.7420 (0.05): the damping no longer touches the spin
+  (gate: within 1 %; the stiffness form lost 68 % / 84 %). Turns 2.688 / 2.686 / 2.685. The wobble: RMS peak to peak
+  over 0.1-0.3 s 1.09 mm without damping, 0.02 mm at beta 0.02; beta 0.05 is overdamped for the cube's ~11 Hz
+  modes (zeta about 1.7) and creeps back without ringing.
+- **Show** (tip swing peak to peak 0-0.5, 1-1.5, 2-2.5 s): beta 0: 106.5, 38.9, 14.8 mm; beta 0.005: 96.9, 4.6,
+  0.2 mm; beta 0.02: 77.7, 0, 0 mm (the stiffness form damped this 40 mm pluck a little more: its projection excess).
+  Settled sag 17.8-17.9 mm.
+- Wall (GPU shared with a game): pluck 39 s at beta 0, 99-136 s with damping; Newton per step 3.2-3.4.
+
+Next: step 5 (Ronova's spin flesh without damping unchanged, against more than one baseline run), then step 6.

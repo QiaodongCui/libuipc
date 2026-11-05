@@ -1,7 +1,8 @@
 """Checks for the RayleighDamping extra constitution (fork branch `aniso`, plan fork_notes/rayleigh_damping.md).
 
-Front end (step 2): the UID, the per-tetrahedron attribute, the rejected inputs and that a scene lists the
-constitution. The physics (the CUDA kernels) is checked separately.
+Front end: the UID, the per-tetrahedron attribute, the rejected inputs and that a scene lists the constitution.
+Physics (CUDA, -m cuda): one tet against the NumPy oracle (plucked and spinning), beta 0 a no-op, the damping working,
+and a spinning tet keeping its angular momentum (the damping of the Green strain rate is rotation-free).
 """
 
 import os
@@ -120,9 +121,10 @@ def test_scene_lists_uid_cuda_backend(tmp_path):
 
 
 # ---------------------------------------------------------------- physics: one tet against the NumPy oracle
-# Rest tet (0, e_x, e_y, e_z) * 0.1 m, vertices 0, 2, 3 fixed, vertex 1 (50 g) released from a displaced pose, no
-# gravity, BDF1 at 480 Hz. The oracle (fork_notes/rayleigh_damping_reference.py) integrates the same incremental
-# potential: SNK1 with libuipc's stored mu and lambda plus the damping term with the SNK1 projection at F_n.
+# Rest tet (0, e_x, e_y, e_z) * 0.1 m, no gravity, BDF1 at 480 Hz. The oracle (fork_notes/rayleigh_damping_reference.py,
+# form "green") integrates the same incremental potential: SNK1 with libuipc's stored mu and lambda plus the damping
+# of the Green strain rate. Plucked: vertices 0, 2, 3 fixed, vertex 1 (50 g) released from a displaced pose.
+# Spinning: all four vertices free (50 g each), released stretched and spinning about z.
 sys_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "fork_notes")
 TET_REST = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]) * 0.1
 MASS = np.array([1.0, 0.05, 1.0, 1.0])
@@ -140,8 +142,22 @@ def oracle():
     return ref
 
 
-def tet_trajectory(workspace, X0, beta):
-    """libuipc: vertex 1's position at each step (STEPS + 1, 3); beta None = no RayleighDamping at all."""
+def spinning_start():
+    """Stretched 1.1 x along x (volume kept) about the centroid, spinning at 2 turns/s about z: X0, V0."""
+    c = TET_REST.mean(0)
+    X0 = c + (TET_REST - c) * np.array([1.1, 1.1**-0.5, 1.1**-0.5])
+    return X0, np.cross([0.0, 0.0, 4 * np.pi], X0 - c)
+
+
+def angular_momentum(traj, V0, mass):
+    """L_z about the centre of mass per step, v_n = (x_n - x_{n-1}) / dt as BDF1."""
+    v = np.concatenate([V0[None], np.diff(traj, axis=0) / DT])
+    c = np.einsum("v,nvi->ni", mass, traj) / mass.sum()
+    return np.einsum("v,nv->n", mass, np.cross(traj - c[:, None], v)[:, :, 2])
+
+
+def tet_trajectory(workspace, X0, beta, V0=None, mass=MASS, fixed=FIXED, velocity_tol=1e-9):
+    """libuipc: the 4 vertex positions at each step (STEPS + 1, 4, 3); beta None = no RayleighDamping at all."""
     T = np.array([[0, 1, 2, 3]])
     mesh, rest = tetmesh(X0, T), tetmesh(TET_REST, T)
     for m in (mesh, rest):
@@ -152,10 +168,13 @@ def tet_trajectory(workspace, X0, beta):
         StableNeoHookean().apply_to(m, ElasticModuli.youngs_poisson(3e4, 0.3), mass_density=1000.0)
         if beta is not None:
             RayleighDamping().apply_to(m, beta)
-    mass = view(mesh.vertices().find("mass") or mesh.vertices().create("mass", 0.0))
-    mass[:] = MASS.reshape(mass.shape)
+    m_view = view(mesh.vertices().find("mass") or mesh.vertices().create("mass", 0.0))
+    m_view[:] = mass.reshape(m_view.shape)
     is_fixed = view(mesh.vertices().find(builtin.is_fixed))
-    is_fixed[:] = FIXED.astype(int).reshape(is_fixed.shape)
+    is_fixed[:] = fixed.astype(int).reshape(is_fixed.shape)
+    if V0 is not None:
+        vel = view(mesh.vertices().find(builtin.velocity))
+        vel[:] = V0.reshape(vel.shape)
     mu = float(view(mesh.tetrahedra().find("mu"))[0])
     lam = float(view(mesh.tetrahedra().find("lambda"))[0])
 
@@ -163,7 +182,7 @@ def tet_trajectory(workspace, X0, beta):
     cfg["dt"] = DT
     cfg["gravity"] = [[0.0], [0.0], [0.0]]
     cfg["contact"]["enable"] = 0
-    cfg["newton"]["velocity_tol"] = 1e-9
+    cfg["newton"]["velocity_tol"] = velocity_tol
     cfg["newton"]["semi_implicit"]["enable"] = 0
     cfg["linear_system"]["tol_rate"] = 1e-10
     scene = Scene(cfg)
@@ -173,11 +192,11 @@ def tet_trajectory(workspace, X0, beta):
     world = World(engine)
     world.init(scene)
     assert world.is_valid()
-    out = [X0[1].copy()]
+    out = [X0.copy()]
     for _ in range(STEPS):
         world.advance()
         world.retrieve()
-        out.append(slot.geometry().positions().view().reshape(-1, 3)[1].copy())
+        out.append(slot.geometry().positions().view().reshape(-1, 3).copy())
     return np.array(out), mu, lam
 
 
@@ -186,24 +205,24 @@ def tet_trajectory(workspace, X0, beta):
 @pytest.mark.parametrize(
     "case, offset, beta",
     [
-        ("small, linear", [1e-4, -5e-5, 3e-5], 0.01),
-        ("large, projection active", [-0.04, 0.03, 0.025], 0.01),
+        ("small", [1e-4, -5e-5, 3e-5], 0.01),
+        ("large", [-0.04, 0.03, 0.025], 0.01),
         ("large, no damping", [-0.04, 0.03, 0.025], 0.0),
+        ("spinning", None, 0.01),
     ],
 )
 def test_single_tet_trajectory_matches_oracle(tmp_path, case, offset, beta):
     ref = oracle()
-    X0 = TET_REST.copy()
-    X0[1] += offset
-    traj, mu, lam = tet_trajectory(str(tmp_path / "ws"), X0, beta)
-    tet = ref.Tet(TET_REST, mu, lam, beta)
-    expect = ref.implicit_euler(tet, TET_REST, X0, np.zeros((4, 3)), MASS, FIXED, DT, STEPS)[:, 1]
-    scale = np.abs(expect - TET_REST[1]).max()
+    if case == "spinning":
+        (X0, V0), mass, fixed = spinning_start(), np.full(4, 0.05), np.zeros(4, bool)
+    else:
+        X0, V0, mass, fixed = TET_REST.copy(), np.zeros((4, 3)), MASS, FIXED
+        X0[1] += offset
+    traj, mu, lam = tet_trajectory(str(tmp_path / "ws"), X0, beta, V0, mass, fixed)
+    tet = ref.Tet(TET_REST, mu, lam, beta, "green")
+    expect = ref.implicit_euler(tet, TET_REST, X0, V0, mass, fixed, DT, STEPS)
+    scale = np.abs(expect - expect[:1]).max()
     assert np.abs(traj - expect).max() < 1e-7 * scale, (case, np.abs(traj - expect).max() / scale)
-    if "projection" in case:  # the damping energy uses the clamped Hessian at some steps
-        clamped = sum((ref.snk1_eigensystem(mu, lam, tet.F(np.vstack([TET_REST[0], x, TET_REST[2:]])))[0] < 0).any()
-                      for x in expect[:-1])
-        assert clamped > 0
 
 
 @pytest.mark.cuda
@@ -215,5 +234,19 @@ def test_single_tet_damping_works_and_zero_beta_is_a_no_op(tmp_path):
     zero, _, _ = tet_trajectory(str(tmp_path / "zero"), X0, 0.0)
     damped, _, _ = tet_trajectory(str(tmp_path / "damped"), X0, 0.01)
     np.testing.assert_array_equal(zero, none)  # no damped tet: the extra constitution adds nothing
-    amp = lambda t: np.abs(t[-20:] - TET_REST[1]).max()  # noqa: E731
+    amp = lambda t: np.abs(t[-20:, 1] - TET_REST[1]).max()  # noqa: E731
     assert amp(damped) < 0.5 * amp(none)  # damping removes most of the ringing by the last steps
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(skip_cuda_on_macos, reason=skip_cuda_on_macos_reason)
+def test_spinning_tet_keeps_its_angular_momentum(tmp_path):
+    """The objective form never damps rigid rotation: a stretched, spinning free tet keeps its angular momentum as
+    without damping (the stiffness-proportional form K(x_n) of steps 1-4 lost 25 % here in the oracle)."""
+    (X0, V0), mass, fixed = spinning_start(), np.full(4, 0.05), np.zeros(4, bool)
+    free, _, _ = tet_trajectory(str(tmp_path / "free"), X0, None, V0, mass, fixed)
+    damped, _, _ = tet_trajectory(str(tmp_path / "damped"), X0, 0.01, V0, mass, fixed)
+    L0, L1 = angular_momentum(free, V0, mass), angular_momentum(damped, V0, mass)
+    assert abs(L1[-1] / L0[-1] - 1) < 1e-2, L1[-1] / L0[-1]
+    ring = lambda t: np.ptp(np.linalg.norm(t[-20:, 1] - t[-20:, 0], axis=1))  # noqa: E731  (edge 0-1 length)
+    assert ring(damped) < ring(free)  # while the internal vibration is damped

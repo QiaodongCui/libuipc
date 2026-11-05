@@ -18,7 +18,7 @@ REGISTER_CONSTITUTION_UIDS()
     info.uid  = RayleighDampingUID;
     info.name = "RayleighDamping";
     info.type = string{builtin::FiniteElement};
-    info.description = "Stiffness-proportional (Rayleigh beta) damping for StableNeoHookean tetrahedra";
+    info.description = "Rayleigh beta damping of the Green strain rate for StableNeoHookean tetrahedra";
     uid_infos.push_back(info);
     return uid_infos;
 }

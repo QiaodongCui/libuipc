@@ -289,8 +289,8 @@ def show(out_dir, log, betas=(0.0, 0.005, 0.02), dt=1 / 480, seconds=2.5, lift=0
 
     bodies = [body(X0, V, T, ARM["E"], ARM["nu"], b, fixed=fixed) for b in betas]  # no contact: they don't touch
     newton, wall = simulate(bodies, config(dt, True, 1e-4, 1e-6), steps, out_dir, "show", observe)
-    log(f"show: {len(betas)} arms, gravity, tip lifted {lift * 1e3:g} mm along mode 1 and released, dt 1/{round(1 / dt)}, "
-        f"{seconds:g} s; Newton/step {newton.mean():.2f}, wall {wall:.1f} s")
+    log(f"show: {len(betas)} arms, gravity, tip lifted {lift * 1e3:g} mm (the first bending mode of each diagonal) "
+        f"and released, dt 1/{round(1 / dt)}, {seconds:g} s; Newton/step {newton.mean():.2f}, wall {wall:.1f} s")
     store = {"F": boundary_faces(T), "rest": V, "betas": np.array(betas), "fps": 60}
     for b in betas:
         x = np.array(frames[b])
@@ -348,8 +348,7 @@ def plot(out_dir):
             t = np.arange(len(L)) * dt
             axes[1, 0].plot(t, L / L[0], color=COLOR[float(b)], label=f"beta {b:g} s", **style)
             axes[1, 1].plot(t, wob * 1e3, color=COLOR[float(b)], label=f"beta {b:g} s", **style)
-        frame(axes[1, 0], "spin: angular momentum; the damping drags on the rotation (gate: within 1 % of beta 0)",
-              "time (s)", "L / L at the start")
+        frame(axes[1, 0], "spin: angular momentum (BDF1 alone loses some)", "time (s)", "L / L at the start")
         frame(axes[1, 1], "spin: wobble, distance from the best rigid fit of the rest cube", "time (s)", "RMS (mm)")
         axes[1, 0].legend(frameon=False, labelcolor=ink2, fontsize=9, loc="lower left")
     fig.savefig(os.path.join(out_dir, "damping_demos.png"), dpi=140, facecolor=surface)

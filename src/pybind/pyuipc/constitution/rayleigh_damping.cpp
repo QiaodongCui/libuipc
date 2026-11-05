@@ -10,11 +10,11 @@ PyRayleighDamping::PyRayleighDamping(py::module& m)
     auto class_RayleighDamping =
         py::class_<RayleighDamping, FiniteElementExtraConstitution>(m,
                                                                     "RayleighDamping",
-                                                                    R"(Stiffness-proportional (Rayleigh beta) damping for StableNeoHookean tetrahedra.
+                                                                    R"(Stiffness-proportional (Rayleigh beta) damping for StableNeoHookean tetrahedra, objective form.
 
-Adds the damping force -beta K v, K the PSD-projected StableNeoHookean stiffness at the start of the step:
-a vibration mode of angular frequency w gets the damping ratio beta w / 2, and rigid motion is not damped
-(up to a small leak for stressed elements). Apply it after StableNeoHookean.)");
+Damps the rate of the Green strain with the tetrahedron's small-strain elasticity (StableNeoHookean's Lame
+parameters at rest). Near rest this is the damping force -beta K v: a vibration mode of angular frequency w
+gets the damping ratio beta w / 2. Rigid motion is never damped, at any stress. Apply it after StableNeoHookean.)");
 
     class_RayleighDamping.def(py::init<const Json&>(),
                               py::arg("config") = RayleighDamping::default_config(),

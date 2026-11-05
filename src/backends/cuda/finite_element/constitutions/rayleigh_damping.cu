@@ -1,31 +1,37 @@
 #include <finite_element/finite_element_extra_constitution.h>
-#include <finite_element/constitutions/stable_neo_hookean_3d_function.h>
 #include <finite_element/fem_utils.h>
 #include <finite_element/matrix_utils.h>
 #include <uipc/builtin/attribute_name.h>
 #include <utils/matrix_assembler.h>
 #include <cuda_tool/cuda_tool.h>
 
-// Stiffness-proportional (Rayleigh beta) damping for StableNeoHookean tetrahedra, as a BDF1 incremental-potential term
-//   E_d = beta dt V / 2 * dF^T H(F_n) dF,  dF = vec(F - F_n)
-// with H(F_n) the PSD-projected SNK1 Hessian (snk1::ddEddF_spd) at the step-start deformation gradient (x_prevs).
-// Its gradient beta dt V H(F_n) dF gives the damping force beta K (x - x_n) / dt = beta K v; its Hessian
-// beta dt V H(F_n) is constant within the step and PSD. Plan and NumPy reference: fork_notes/rayleigh_damping*.
+// Rayleigh beta damping for StableNeoHookean tetrahedra, objective form: a damping of the Green strain rate, as a
+// BDF1 incremental-potential term
+//   E_d = beta dt V / 2 * dE : C : dE,  dE = (F^T F - F_n^T F_n) / 2
+// with F_n the step-start deformation gradient (x_prevs) and C the small-strain elasticity of the tet's SNK1 (Lame
+// mu, lambda - mu). At rest it is beta K v (a mode of angular frequency w gets the damping ratio beta w / 2); a
+// rotation within the step leaves F^T F unchanged, so rigid motion is never damped, at any stress. Gradient
+// beta dt V * F (C : dE); Hessian beta dt V * M with M[dF, dG] = sym(F^T dF) : C : sym(F^T dG), PSD (the small
+// geometric term I (x) (C : dE) is left out). Plan and NumPy reference: fork_notes/rayleigh_damping*.
 namespace uipc::backend::cuda
 {
 namespace
 {
-    namespace SNH = snk1;
-
     constexpr SizeT StencilSize     = 4;
     constexpr SizeT HalfHessianSize = StencilSize * (StencilSize + 1) / 2;
+
+    // C : dE
+    __device__ Matrix3x3 green_stress(const Matrix3x3& dE, Float mu_L, Float lam_L)
+    {
+        return 2.0 * mu_L * dE + lam_L * dE.trace() * Matrix3x3::Identity();
+    }
 
     __global__ void RayleighDamping_do_compute_energy_kernel(
         cuda_tool::CBufferView<Vector4i>  tets,
         cuda_tool::CBufferView<Matrix3x3> Dm_invs,
         cuda_tool::CBufferView<Float>     volumes,
-        cuda_tool::CBufferView<Float>     mus,
-        cuda_tool::CBufferView<Float>     lambdas,
+        cuda_tool::CBufferView<Float>     lame_mus,
+        cuda_tool::CBufferView<Float>     lame_lambdas,
         cuda_tool::CBufferView<Float>     betas,
         cuda_tool::CBufferView<Vector3>   xs,
         cuda_tool::CBufferView<Vector3>   x_prevs,
@@ -43,19 +49,18 @@ namespace
         const Matrix3x3 Fn =
             fem::F(x_prevs(tet(0)), x_prevs(tet(1)), x_prevs(tet(2)), x_prevs(tet(3)), Dm_inv);
 
-        Matrix9x9 Hn;
-        SNH::ddEddF_spd(Hn, mus(I), lambdas(I), Fn);
-        const Vector9 dF = flatten(F) - flatten(Fn);
+        const Matrix3x3 dE = 0.5 * (F.transpose() * F - Fn.transpose() * Fn);
+        const Matrix3x3 S  = green_stress(dE, lame_mus(I), lame_lambdas(I));
 
-        energies(I) = 0.5 * betas(I) * dt * volumes(I) * dF.dot(Hn * dF);
+        energies(I) = 0.5 * betas(I) * dt * volumes(I) * dE.cwiseProduct(S).sum();
     }
 
     __global__ void RayleighDamping_do_compute_gradient_hessian_kernel(
         cuda_tool::CBufferView<Vector4i>       tets,
         cuda_tool::CBufferView<Matrix3x3>      Dm_invs,
         cuda_tool::CBufferView<Float>          volumes,
-        cuda_tool::CBufferView<Float>          mus,
-        cuda_tool::CBufferView<Float>          lambdas,
+        cuda_tool::CBufferView<Float>          lame_mus,
+        cuda_tool::CBufferView<Float>          lame_lambdas,
         cuda_tool::CBufferView<Float>          betas,
         cuda_tool::CBufferView<Vector3>        xs,
         cuda_tool::CBufferView<Vector3>        x_prevs,
@@ -70,17 +75,36 @@ namespace
             return;
         const Vector4i&  tet    = tets(I);
         const Matrix3x3& Dm_inv = Dm_invs(I);
+        const Float      mu_L   = lame_mus(I);
+        const Float      lam_L  = lame_lambdas(I);
+        const Float      scale  = betas(I) * dt * volumes(I);
 
         const Matrix3x3 F = fem::F(xs(tet(0)), xs(tet(1)), xs(tet(2)), xs(tet(3)), Dm_inv);
         const Matrix3x3 Fn =
             fem::F(x_prevs(tet(0)), x_prevs(tet(1)), x_prevs(tet(2)), x_prevs(tet(3)), Dm_inv);
 
-        // beta dt V H(F_n): the damping Hessian in F space, PSD (the positive scale commutes with the projection)
-        Matrix9x9 Hd;
-        SNH::ddEddF_spd(Hd, mus(I), lambdas(I), Fn);
-        Hd *= betas(I) * dt * volumes(I);
+        const Matrix3x3 dE = 0.5 * (F.transpose() * F - Fn.transpose() * Fn);
+        const Vector9 dEdF = scale * flatten(F * green_stress(dE, mu_L, lam_L));
 
-        const Vector9 dEdF = Hd * (flatten(F) - flatten(Fn));
+        // M in F space (column-major flatten, index 3 col + row):
+        //   M(3b + i, 3d + k) = mu_L ((F F^T)_ik delta_bd + F_id F_kb) + lam_L F_ib F_kd
+        Matrix9x9 Hd;
+        if(!gradient_only)
+        {
+            const Matrix3x3 FFt = F * F.transpose();
+#pragma unroll
+            for(int b = 0; b < 3; ++b)
+#pragma unroll
+                for(int i = 0; i < 3; ++i)
+#pragma unroll
+                    for(int d = 0; d < 3; ++d)
+#pragma unroll
+                        for(int k = 0; k < 3; ++k)
+                            Hd(3 * b + i, 3 * d + k) =
+                                scale
+                                * (mu_L * ((b == d ? FFt(i, k) : 0.0) + F(i, d) * F(k, b))
+                                   + lam_L * F(i, b) * F(k, d));
+        }
 
         auto shape_gradients = fem::tetrahedron_shape_gradients(Dm_inv);
 
@@ -134,15 +158,15 @@ class RayleighDamping final : public FiniteElementExtraConstitution
     vector<Vector4i>  h_tets;
     vector<Matrix3x3> h_Dm_invs;
     vector<Float>     h_volumes;
-    vector<Float>     h_mus;
-    vector<Float>     h_lambdas;
-    vector<Float>     h_betas;
+    vector<Float> h_lame_mus;  // small-strain Lame parameters of the tet's SNK1
+    vector<Float> h_lame_lambdas;  // (stored mu, lambda - mu), lambda kept >= -2/3 mu so C is PSD
+    vector<Float> h_betas;
 
     cuda_tool::DeviceBuffer<Vector4i>  tets;
     cuda_tool::DeviceBuffer<Matrix3x3> Dm_invs;
     cuda_tool::DeviceBuffer<Float>     volumes;
-    cuda_tool::DeviceBuffer<Float>     mus;
-    cuda_tool::DeviceBuffer<Float>     lambdas;
+    cuda_tool::DeviceBuffer<Float>     lame_mus;
+    cuda_tool::DeviceBuffer<Float>     lame_lambdas;
     cuda_tool::DeviceBuffer<Float>     betas;
 
     virtual void do_build(BuildInfo& info) override
@@ -159,8 +183,8 @@ class RayleighDamping final : public FiniteElementExtraConstitution
         h_tets.clear();
         h_Dm_invs.clear();
         h_volumes.clear();
-        h_mus.clear();
-        h_lambdas.clear();
+        h_lame_mus.clear();
+        h_lame_lambdas.clear();
         h_betas.clear();
 
         info.for_each(  //
@@ -204,8 +228,9 @@ class RayleighDamping final : public FiniteElementExtraConstitution
                     h_tets.push_back(tet);
                     h_Dm_invs.push_back(fem::Dm_inv(x0, x1, x2, x3));
                     h_volumes.push_back(fem::Ds(x0, x1, x2, x3).determinant() / 6.0);
-                    h_mus.push_back(mus_v[t]);
-                    h_lambdas.push_back(lms_v[t]);
+                    h_lame_mus.push_back(mus_v[t]);
+                    h_lame_lambdas.push_back(
+                        std::max(lms_v[t] - mus_v[t], -2.0 / 3.0 * mus_v[t]));
                     h_betas.push_back(beta);
                 }
             });
@@ -216,10 +241,10 @@ class RayleighDamping final : public FiniteElementExtraConstitution
         Dm_invs.view().copy_from(h_Dm_invs.data());
         volumes.resize(h_volumes.size());
         volumes.view().copy_from(h_volumes.data());
-        mus.resize(h_mus.size());
-        mus.view().copy_from(h_mus.data());
-        lambdas.resize(h_lambdas.size());
-        lambdas.view().copy_from(h_lambdas.data());
+        lame_mus.resize(h_lame_mus.size());
+        lame_mus.view().copy_from(h_lame_mus.data());
+        lame_lambdas.resize(h_lame_lambdas.size());
+        lame_lambdas.view().copy_from(h_lame_lambdas.data());
         betas.resize(h_betas.size());
         betas.view().copy_from(h_betas.data());
     }
@@ -245,8 +270,8 @@ class RayleighDamping final : public FiniteElementExtraConstitution
                 tets.cview(),
                 Dm_invs.cview(),
                 volumes.cview(),
-                mus.cview(),
-                lambdas.cview(),
+                lame_mus.cview(),
+                lame_lambdas.cview(),
                 betas.cview(),
                 info.xs(),
                 fem->x_prevs().cview(),
@@ -266,8 +291,8 @@ class RayleighDamping final : public FiniteElementExtraConstitution
                 tets.cview(),
                 Dm_invs.cview(),
                 volumes.cview(),
-                mus.cview(),
-                lambdas.cview(),
+                lame_mus.cview(),
+                lame_lambdas.cview(),
                 betas.cview(),
                 info.xs(),
                 fem->x_prevs().cview(),
